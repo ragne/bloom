@@ -1,6 +1,8 @@
 use bit_vec::BitVec;
 use fasthash::{murmur3, spooky};
 use std::f64::consts::E;
+use fasthash::{Murmur3HasherExt, SpookyHasherExt, HasherExt, FastHash, FastHasher};
+use std::hash::{Hash, Hasher};
 
 const HASH_PRIME: u64 = 18446744073709551557;
 
@@ -17,7 +19,7 @@ pub struct BloomFilter {
     fp: f64,
 }
 ///
-/// Terms/Parameters:
+///  Terms/Parameters:
 ///  - fp -- false probability
 ///  - size -- total bits count in filter in _bytes_
 ///  - capacity -- expected number of elements in filter often used with probability
@@ -99,18 +101,33 @@ impl BloomFilter {
         k as u32
     }
 
+    #[inline]
+    fn _mmr3_hash<T: Hash>(t: &T) -> u128 {
+        let mut s = Murmur3HasherExt::with_seed(0);
+        t.hash(&mut s);
+        s.finish_ext()
+    }
+
+    #[inline]
+    fn _spooky_hash<T: Hash>(t: &T) -> u128 {
+        let mut s = SpookyHasherExt::with_seed((0, 0));
+        t.hash(&mut s);
+        s.finish_ext()
+    }
+
     // We use the results of
     // 'Less Hashing, Same Performance: Building a Better Bloom Filter'
     // https://www.eecs.harvard.edu/~michaelm/postscripts/tr-02-05.pdf, to use
     // g_i(x) = h1(u) + i * h2(u) mod m'
     //
-    fn compute_hashes<I: AsRef<[u8]>>(&self, item: &I) -> Vec<u64> {
+    fn compute_hashes<I: Hash>(&self, item: &I) -> Vec<u64> {
         let mut result: Vec<u64> = Vec::with_capacity(self.k);
-        let h1 = murmur3::hash128_with_seed(item, 0);
+
+        let h1 = BloomFilter::_spooky_hash(item);
         result.push(h1 as u64);
         result.push((h1 >> 64) as u64);
 
-        let h2 = spooky::hash128_with_seed(item, 0);
+        let h2 = BloomFilter::_spooky_hash(item);
         result.push(h2 as u64);
         result.push((h2 >> 64) as u64);
 
@@ -125,7 +142,16 @@ impl BloomFilter {
         result
     }
 
-    pub fn add<I: AsRef<[u8]>>(&mut self, item: I) {
+    /// Adds item to filter
+    ///
+    /// # Example
+    /// 
+    /// ```
+    /// let mut f = bloom::BloomFilter::with_fp_size(0.1, 10);
+    /// f.add(&42);
+    /// assert!(f.get(&42));
+    /// ```
+    pub fn add<I: Hash>(&mut self, item: I) {
         let hashes = self.compute_hashes(&item);
         for idx in 0..self.k {
             let idx = hashes[idx] % self.bits() as u64;
@@ -133,7 +159,17 @@ impl BloomFilter {
         }
     }
 
-    pub fn get<I: AsRef<[u8]>>(&self, item: I) -> bool {
+    /// Checks that item is in filter
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// let mut f = bloom::BloomFilter::with_fp_size(0.1, 10);
+    /// f.add(&42);
+    /// assert!(f.get(&42));
+    /// assert!(!f.get(&0));
+    /// ```
+    pub fn get<I: Hash>(&self, item: I) -> bool {
         let mut result = true;
         let hashes = self.compute_hashes(&item);
         for idx in 0..self.k {
@@ -151,27 +187,14 @@ mod tests {
     use super::*;
     use rand::Rng;
 
-    pub(crate) fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-        unsafe {
-            ::std::slice::from_raw_parts((p as *const T) as *const u8, ::std::mem::size_of::<T>())
-        }
-    }
-
-    pub(crate) fn any_as_u8_vec<T: Sized>(p: T) -> Vec<u8> {
-        unsafe {
-            ::std::slice::from_raw_parts((&p as *const T) as *const u8, ::std::mem::size_of::<T>())
-                .to_vec()
-        }
-    }
-
-    #[repr(C)]
+    #[derive(Hash, Eq, PartialEq)]
     struct TestItem {
         a: u32,
     }
 
     #[test]
     fn item_in_filter() {
-        let item = any_as_u8_slice(&TestItem { a: 42 });
+        let item = TestItem { a: 42 };
         let mut f = BloomFilter::new(1, 1, 0.1);
         f.add(&item);
         assert!(f.get(&item));
@@ -180,9 +203,9 @@ mod tests {
     #[test]
     fn false_negatives() {
         let items = (0..64)
-            .map(|i| any_as_u8_vec(TestItem { a: i }))
-            .collect::<Vec<Vec<u8>>>();
-        let mut f = BloomFilter::new(8, 8, 0.1);
+            .map(|i| TestItem { a: i })
+            .collect::<Vec<TestItem>>();
+        let mut f = BloomFilter::new(8, 2, 0.1);
         let _: () = items.iter().map(|i| f.add(i)).collect();
         let mut rng = rand::thread_rng();
         for _ in 0..128 {
@@ -193,28 +216,18 @@ mod tests {
     }
 
     #[test]
-    fn compute_hashes_correctly() {
-        let mut result: Vec<u64> = Vec::with_capacity(4);
-        let h1 = murmur3::hash128_with_seed(any_as_u8_vec(TestItem { a: 42 }), 0);
-        result.push(h1 as u64); // lower
-        result.push((h1 >> 64) as u64); // upper
-
-        assert!(h1 == unsafe { std::mem::transmute((result[0], result[1])) });
-    }
-
-    #[test]
     fn false_positive() {
         let items = (0..64)
-            .map(|i| any_as_u8_vec(TestItem { a: i }))
-            .collect::<Vec<Vec<u8>>>();
+            .map(|i| TestItem { a: i })
+            .collect::<Vec<TestItem>>();
         //let mut f = BloomFilter::new(427, 8);
         let mut f = BloomFilter::with_fp_size(0.01, 64);
 
         let _: () = items.iter().map(|i| f.add(i)).collect();
         let mut rng = rand::thread_rng();
         let false_items = (64..128)
-            .map(|i| any_as_u8_vec(TestItem { a: i }))
-            .collect::<Vec<Vec<u8>>>();
+            .map(|i| TestItem { a: i })
+            .collect::<Vec<TestItem>>();
 
         let mut positives = 0;
         for _ in 0..128 {

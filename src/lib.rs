@@ -1,47 +1,75 @@
 use bit_vec::BitVec;
-use fasthash::{murmur, murmur3, spooky};
-
-use std::convert::TryInto;
+use fasthash::{murmur3, spooky};
 use std::f64::consts::E;
 
 const HASH_PRIME: u64 = 18446744073709551557;
 
 pub struct BloomFilter {
+    // storage
     array: BitVec,
+    // Total size of storage in bytes
     size: usize,
-    hash_count: usize,
+    // Number of passes for hash functions
+    k: usize,
+    // Maximum number of items that can be stored and retrieved with given fp
+    capacity: u64,
+    // False probability rate
+    fp: f64,
 }
-
+///
+/// Terms/Parameters:
+///  - fp -- false probability
+///  - size -- total bits count in filter in _bytes_
+///  - capacity -- expected number of elements in filter often used with probability
+///  - k -- number of passes for hashing
 impl BloomFilter {
-    pub fn new(size: usize, hash_count: usize) -> Self {
-        BloomFilter::with_bitscount(size * 8, hash_count)
+    /// Creates new bloomfilter from given size and k
+    pub fn new(size: usize, k: usize, fp: f64) -> Self {
+        // @TODO: what should be in default constructor?
+        BloomFilter::with_parameters(size, k, fp)
     }
 
-    pub fn with_bitscount(nbits: usize, hash_count: usize) -> Self {
-        let array = BitVec::from_elem(nbits, false);
-
+    pub fn with_parameters(size: usize, k: usize, fp: f64) -> Self {
+        let capacity = BloomFilter::calculate_capacity_from_fp_size(fp, size);
+        let nbits = size * 8;
+        assert!(capacity > 0, "Given parameters is too small to create a filter");
         Self {
-            array,
-            size: nbits,
-            hash_count,
+            array: BitVec::from_elem(nbits, false),
+            size,
+            k,
+            capacity,
+            fp,
         }
     }
 
+
+    /// Creates a bloomfilter with defined false probability and expected number of elements
     pub fn with_fp_size(fp: f64, expected: u64) -> Self {
         let size = BloomFilter::calculate_size_from_fp_capacity(fp, expected);
         let k = BloomFilter::calculate_k(size, expected);
-        BloomFilter::new(size, k as usize)
+        BloomFilter::new(size, k as usize, fp)
     }
 
-    fn calculate_size_from_fp_capacity(fp: f64, capacity: u64) -> usize {
-        assert!(fp != 0f64);
-        assert!(capacity != 0);
+    /// Returns total
+    pub fn capacity(&self) -> usize {
+        todo!()
+    }
 
-        let bits = -(capacity as f64 * fp.ln() / (2f64.ln() * 2f64.ln()));
+    pub fn bits(&self) -> usize {
+        self.array.len()
+    }
+
+    /// Calculates size in _bytes_ from given false probability and expected capacity
+    fn calculate_size_from_fp_capacity(fp: f64, expected: u64) -> usize {
+        assert!(fp != 0f64);
+        assert!(expected != 0);
+
+        let bits = -(expected as f64 * fp.ln() / (2f64.ln() * 2f64.ln()));
         let bytes = (bits.ceil() / 8.0).ceil();
         bytes as usize
     }
 
+    /// Calculates estimated false probability from given size in _bytes_ and capacity
     fn calculate_fp_from_capacity_size(bytes: usize, capacity: u64) -> f64 {
         let bits = (bytes * 8) as f64;
         assert!(bits != 0f64);
@@ -51,6 +79,7 @@ impl BloomFilter {
         fp
     }
 
+    /// Calculates number of items for which fp will be held true from given size in _bytes_
     fn calculate_capacity_from_fp_size(fp: f64, bytes: usize) -> u64 {
         let bits = (bytes * 8) as f64;
         assert!(bits != 0f64);
@@ -60,6 +89,7 @@ impl BloomFilter {
         capacity as u64 // ceil?
     }
 
+    // Calculates optimal k value
     fn calculate_k(bytes: usize, capacity: u64) -> u32 {
         let bits = (bytes * 8) as f64;
         assert!(bits != 0f64);
@@ -75,7 +105,7 @@ impl BloomFilter {
     // g_i(x) = h1(u) + i * h2(u) mod m'
     //
     fn compute_hashes<I: AsRef<[u8]>>(&self, item: &I) -> Vec<u64> {
-        let mut result: Vec<u64> = Vec::with_capacity(self.hash_count);
+        let mut result: Vec<u64> = Vec::with_capacity(self.k);
         let h1 = murmur3::hash128_with_seed(item, 0);
         result.push(h1 as u64);
         result.push((h1 >> 64) as u64);
@@ -85,16 +115,7 @@ impl BloomFilter {
         result.push((h2 >> 64) as u64);
 
         assert!(result.len() >= 4);
-        for i in 4..self.hash_count {
-            println!("result[3], i: {:#x}, {}", result[3], i);
-            println!(
-                "result[3].wrapping_mul: {:#x}",
-                (result[3].wrapping_mul(i as u64)) % HASH_PRIME
-            );
-            println!(
-                "{:#x}",
-                result[1].wrapping_add((result[3].wrapping_mul(i as u64)) % HASH_PRIME)
-            );
+        for i in 4..self.k {
             result.insert(
                 i,
                 result[1].wrapping_add((result[3].wrapping_mul(i as u64)) % HASH_PRIME),
@@ -104,16 +125,10 @@ impl BloomFilter {
         result
     }
 
-    fn get_idx<'a, I: AsRef<[u8]>>(&self, item: &'a I) -> impl Iterator<Item = usize> + 'a {
-        let size = self.size;
-        (0..self.hash_count)
-            .map(move |cnt| (murmur::hash32_with_seed(item, cnt as u32) % size as u32) as usize)
-    }
-
     pub fn add<I: AsRef<[u8]>>(&mut self, item: I) {
         let hashes = self.compute_hashes(&item);
-        for idx in 0..self.hash_count {
-            let idx = hashes[idx] % self.size as u64;
+        for idx in 0..self.k {
+            let idx = hashes[idx] % self.bits() as u64;
             self.array.set(idx as usize, true);
         }
     }
@@ -121,9 +136,8 @@ impl BloomFilter {
     pub fn get<I: AsRef<[u8]>>(&self, item: I) -> bool {
         let mut result = true;
         let hashes = self.compute_hashes(&item);
-        for idx in 0..self.hash_count {
-            let idx = hashes[idx] % self.size as u64;
-            println!("get idx {}, in array: {}", idx, self.array[idx as usize] == true);
+        for idx in 0..self.k {
+            let idx = hashes[idx] % self.bits() as u64;
             if !self.array[idx as usize] {
                 result = false;
             }
@@ -158,7 +172,7 @@ mod tests {
     #[test]
     fn item_in_filter() {
         let item = any_as_u8_slice(&TestItem { a: 42 });
-        let mut f = BloomFilter::with_bitscount(1, 1);
+        let mut f = BloomFilter::new(1, 1, 0.1);
         f.add(&item);
         assert!(f.get(&item));
     }
@@ -168,7 +182,7 @@ mod tests {
         let items = (0..64)
             .map(|i| any_as_u8_vec(TestItem { a: i }))
             .collect::<Vec<Vec<u8>>>();
-        let mut f = BloomFilter::new(8, 8);
+        let mut f = BloomFilter::new(8, 8, 0.1);
         let _: () = items.iter().map(|i| f.add(i)).collect();
         let mut rng = rand::thread_rng();
         for _ in 0..128 {
@@ -208,12 +222,12 @@ mod tests {
             let item = &false_items[idx];
             if f.get(&item) {
                 positives += 1;
-                dbg!(item);
+                assert!(!items.contains(&item));
             }
         }
         dbg!(f.array.len());
         dbg!(positives);
-        dbg!(f.hash_count);
+        dbg!(f.k);
         assert!(positives <= (false_items.len() / 10));
     }
 
@@ -240,5 +254,4 @@ mod tests {
         let size = BloomFilter::calculate_size_from_fp_capacity(0.001, 5000);
         assert_eq!(size, 8986);
     }
-
 }

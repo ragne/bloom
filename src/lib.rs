@@ -1,10 +1,14 @@
-use bit_vec::BitVec;
-use fasthash::{murmur3, spooky};
-use std::f64::consts::E;
-use fasthash::{Murmur3HasherExt, SpookyHasherExt, HasherExt, FastHash, FastHasher};
-use std::hash::{Hash, Hasher};
+#![feature(test)]
+extern crate test;
 
-const HASH_PRIME: u64 = 18446744073709551557;
+use bit_vec::BitVec;
+use fasthash::{FastHasher, HasherExt, Murmur3HasherExt, SpookyHasherExt};
+use std::f64::consts::E;
+use std::hash::Hash;
+
+
+// the highest prime that fits into u64
+const HASH_PRIME: u64 = 0xffffffffffffffc5;
 
 pub struct BloomFilter {
     // storage
@@ -15,6 +19,8 @@ pub struct BloomFilter {
     k: usize,
     // Maximum number of items that can be stored and retrieved with given fp
     capacity: u64,
+    // stored number of items
+    stored_items: u64,
     // False probability rate
     fp: f64,
 }
@@ -34,16 +40,28 @@ impl BloomFilter {
     pub fn with_parameters(size: usize, k: usize, fp: f64) -> Self {
         let capacity = BloomFilter::calculate_capacity_from_fp_size(fp, size);
         let nbits = size * 8;
-        assert!(capacity > 0, "Given parameters is too small to create a filter");
+        assert!(
+            capacity > 0,
+            "Given parameters is too small to create a filter"
+        );
         Self {
             array: BitVec::from_elem(nbits, false),
             size,
             k,
             capacity,
             fp,
+            stored_items: 0,
         }
     }
 
+    /// Returns current fp rate
+    pub fn fp(&self) -> f64 {
+        if self.stored_items == 0 {
+            self.fp
+        } else {
+            BloomFilter::calculate_fp_from_capacity_size(self.size, self.stored_items)
+        }
+    }
 
     /// Creates a bloomfilter with defined false probability and expected number of elements
     pub fn with_fp_size(fp: f64, expected: u64) -> Self {
@@ -52,9 +70,9 @@ impl BloomFilter {
         BloomFilter::new(size, k as usize, fp)
     }
 
-    /// Returns total
-    pub fn capacity(&self) -> usize {
-        todo!()
+    /// Returns total capacity
+    pub fn capacity(&self) -> u64 {
+        self.capacity
     }
 
     pub fn bits(&self) -> usize {
@@ -145,7 +163,7 @@ impl BloomFilter {
     /// Adds item to filter
     ///
     /// # Example
-    /// 
+    ///
     /// ```
     /// let mut f = bloom::BloomFilter::with_fp_size(0.1, 10);
     /// f.add(&42);
@@ -157,12 +175,13 @@ impl BloomFilter {
             let idx = hashes[idx] % self.bits() as u64;
             self.array.set(idx as usize, true);
         }
+        self.stored_items += 1
     }
 
     /// Checks that item is in filter
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```
     /// let mut f = bloom::BloomFilter::with_fp_size(0.1, 10);
     /// f.add(&42);
@@ -245,6 +264,27 @@ mod tests {
     }
 
     #[test]
+    fn fp_changes_with_inserts() {
+        // we ask for a filter that should be able to hold 16 items with 0.1 false negative rate
+        // and filter will calc optimal k value
+        let mut f = BloomFilter::with_fp_size(0.1, 16);
+        println!("Current capacity/fp: {}/{:1.6}", f.capacity, f.fp());
+        // now insert 32 items which should drive fp up
+        for i in 0..32 {
+            f.add(&TestItem { a: i })
+        }
+        // it should become ~0.3
+        assert!(f.fp() >= 0.3f64);
+    }
+
+    #[test]
+    fn stored_items_changed() {
+        let mut f = BloomFilter::with_fp_size(0.1, 16);
+        f.add(&TestItem { a: 42 });
+        assert!(f.stored_items == 1);
+    }
+
+    #[test]
     fn calc_k() {
         let k = BloomFilter::calculate_k(512, 5000);
         assert_eq!(k, 1);
@@ -266,5 +306,22 @@ mod tests {
     fn calculate_size_from_fp_capacity() {
         let size = BloomFilter::calculate_size_from_fp_capacity(0.001, 5000);
         assert_eq!(size, 8986);
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use test::Bencher;
+    use rand::Rng;
+    use rand::distributions::Uniform;
+    #[bench]
+    fn inserts_repeatedly(b: &mut Bencher) {
+        let mut f = BloomFilter::with_fp_size(0.05, 50000);
+        let mut gen = rand::thread_rng();
+        b.iter(|| {
+            let item = gen.sample(Uniform::new(0, 6_000_000));
+            f.add(&item)
+        })
     }
 }

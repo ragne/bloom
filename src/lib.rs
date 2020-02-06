@@ -3,6 +3,7 @@ use fasthash::{FastHasher, HasherExt, Murmur3HasherExt, SpookyHasherExt, XXH3Has
 use std::f64::consts::E;
 use std::hash::Hash;
 
+pub mod dynamic;
 
 // the highest prime that fits into u64
 const HASH_PRIME: u64 = 0xffffffffffffffc5;
@@ -65,6 +66,11 @@ impl BloomFilter {
         let size = BloomFilter::calculate_size_from_fp_capacity(fp, expected);
         let k = BloomFilter::calculate_k(size, expected);
         BloomFilter::new(size, k as usize, fp)
+    }
+
+    /// Returns number of currently stored items
+    pub fn stored(&self) -> u64 {
+        self.stored_items
     }
 
     /// Returns total capacity
@@ -203,6 +209,42 @@ impl BloomFilter {
         }
         result
     }
+
+    /// Calculates the union of two filters. This acts like the bitwise `or`
+    /// function.
+    ///
+    /// Sets `self` to the union of `self` and `other`. Both filters must have
+    /// the same length and k number. Returns `true` if `self` changed.
+    ///
+    pub fn union(&mut self, other: &Self) -> bool {
+        assert!(
+            self.capacity == other.capacity,
+            "Only unions with the same capacity can be unioned"
+        );
+        assert!(
+            self.k == other.k,
+            "Only unions with the same number of hash functions can be unioned"
+        );
+        self.array.union(&other.array)
+    }
+
+    /// Calculates the intersection of two filters. This acts like the bitwise `and`
+    /// function.
+    ///
+    /// Sets `self` to the intersection of `self` and `other`. Both filters must have
+    /// the same length and k number. Returns `true` if `self` changed.
+    ///
+    pub fn intersect(&mut self, other: &Self) -> bool {
+        assert!(
+            self.capacity == other.capacity,
+            "Only unions with the same capacity can be unioned"
+        );
+        assert!(
+            self.k == other.k,
+            "Only unions with the same number of hash functions can be unioned"
+        );
+        self.array.intersect(&other.array)
+    }
 }
 
 #[cfg(test)]
@@ -310,5 +352,36 @@ mod tests {
     fn calculate_size_from_fp_capacity() {
         let size = BloomFilter::calculate_size_from_fp_capacity(0.001, 5000);
         assert_eq!(size, 8986);
+    }
+
+    #[test]
+    fn union() {
+        let mut a = BloomFilter::with_fp_size(0.1, 16);
+        a.add(&TestItem { a: 42 });
+        let mut b = BloomFilter::with_fp_size(0.1, 16);
+        b.add(&TestItem { a: 77 });
+
+        a.union(&b);
+        assert!(a.get(42));
+        assert!(a.get(77));
+        assert!(b.get(77));
+        assert!(!b.get(42));
+    }
+
+    #[test]
+    fn intersect() {
+        let mut a = BloomFilter::with_fp_size(0.1, 16);
+        a.add(&TestItem { a: 42 });
+        a.add(&TestItem{ a: 99});
+        let mut b = BloomFilter::with_fp_size(0.1, 16);
+        b.add(&TestItem { a: 77 });
+        b.add(&TestItem{ a: 99});
+
+        a.intersect(&b);
+        assert!(!a.get(42));
+        assert!(!a.get(77));
+        assert!(a.get(99));
+        assert!(b.get(77));
+        assert!(!b.get(42));
     }
 }

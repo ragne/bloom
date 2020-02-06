@@ -1,8 +1,5 @@
-#![feature(test)]
-extern crate test;
-
 use bit_vec::BitVec;
-use fasthash::{FastHasher, HasherExt, Murmur3HasherExt, SpookyHasherExt};
+use fasthash::{FastHasher, HasherExt, Murmur3HasherExt, SpookyHasherExt, XXH3HasherExt};
 use std::f64::consts::E;
 use std::hash::Hash;
 
@@ -133,19 +130,26 @@ impl BloomFilter {
         s.finish_ext()
     }
 
+    #[inline]
+    fn _xxh3_hash<T: Hash>(t: &T) -> u128 {
+        let mut s = XXH3HasherExt::with_seed(0);
+        t.hash(&mut s);
+        s.finish_ext()
+    }
+
     // We use the results of
     // 'Less Hashing, Same Performance: Building a Better Bloom Filter'
     // https://www.eecs.harvard.edu/~michaelm/postscripts/tr-02-05.pdf, to use
     // g_i(x) = h1(u) + i * h2(u) mod m'
     //
-    fn compute_hashes<I: Hash>(&self, item: &I) -> Vec<u64> {
+    pub fn compute_hashes<I: Hash>(&self, item: &I) -> Vec<u64> {
         let mut result: Vec<u64> = Vec::with_capacity(self.k);
 
-        let h1 = BloomFilter::_spooky_hash(item);
+        let h1 = BloomFilter::_mmr3_hash(item);
         result.push(h1 as u64);
         result.push((h1 >> 64) as u64);
 
-        let h2 = BloomFilter::_spooky_hash(item);
+        let h2 = BloomFilter::_xxh3_hash(item);
         result.push(h2 as u64);
         result.push((h2 >> 64) as u64);
 
@@ -306,22 +310,5 @@ mod tests {
     fn calculate_size_from_fp_capacity() {
         let size = BloomFilter::calculate_size_from_fp_capacity(0.001, 5000);
         assert_eq!(size, 8986);
-    }
-}
-
-#[cfg(test)]
-mod bench {
-    use super::*;
-    use test::Bencher;
-    use rand::Rng;
-    use rand::distributions::Uniform;
-    #[bench]
-    fn inserts_repeatedly(b: &mut Bencher) {
-        let mut f = BloomFilter::with_fp_size(0.05, 50000);
-        let mut gen = rand::thread_rng();
-        b.iter(|| {
-            let item = gen.sample(Uniform::new(0, 6_000_000));
-            f.add(&item)
-        })
     }
 }

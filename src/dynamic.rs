@@ -62,6 +62,12 @@ impl DynamicBloom {
         }
         return false;
     }
+
+    /// Extends (aka union) the filter from `other`, consuming `other`
+    pub fn extend(&mut self, other: Self) {
+        assert!(self.expected == other.expected, "Filters should be equal");
+        self.filters.extend(other.filters.into_iter())
+    }
 }
 
 #[cfg(test)]
@@ -98,5 +104,41 @@ mod tests {
         assert!(f.get(77));
         // testing implementation
         assert!(f.filters[1].get(77));
+    }
+
+    #[test]
+    fn extend() {
+        let mut a = DynamicBloom::new(16, 0.05);
+        let mut b = DynamicBloom::new(16, 0.05);
+
+        for i in 0..17 {
+            a.add(i);
+        }
+        for i in 17..32 {
+            b.add(i);
+        }
+        assert!(a.get(&16));
+        assert!(b.get(18));
+        a.extend(b);
+        assert!(a.get(18));
+        assert!(a.get(31));
+
+    }
+
+    #[test]
+    #[should_panic]
+    fn extend_panics_when_filters_are_different() {
+        let mut a = DynamicBloom::new(16, 0.05);
+        let mut b = DynamicBloom::new(14, 0.05);
+
+        for i in 0..17 {
+            a.add(i);
+        }
+        for i in 17..32 {
+            b.add(i);
+        }
+        assert!(a.get(&16));
+        assert!(b.get(18));
+        a.extend(b);
     }
 }

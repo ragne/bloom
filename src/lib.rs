@@ -372,10 +372,10 @@ mod tests {
     fn intersect() {
         let mut a = BloomFilter::with_fp_size(0.1, 16);
         a.add(&TestItem { a: 42 });
-        a.add(&TestItem{ a: 99});
+        a.add(&TestItem { a: 99 });
         let mut b = BloomFilter::with_fp_size(0.1, 16);
         b.add(&TestItem { a: 77 });
-        b.add(&TestItem{ a: 99});
+        b.add(&TestItem { a: 99 });
 
         a.intersect(&b);
         assert!(!a.get(42));

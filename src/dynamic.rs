@@ -63,6 +63,19 @@ impl DynamicBloom {
         return false;
     }
 
+    pub fn len(&self) -> usize {
+        self.filters.len()
+    }
+
+    pub fn assert_fp(&self) -> bool {
+        for (i, filter) in self.filters.iter().enumerate() {
+            if filter.fp() > self.fp {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Extends (aka union) the filter from `other`, consuming `other`
     pub fn extend(&mut self, other: Self) {
         assert!(self.expected == other.expected, "Filters should be equal");
@@ -122,7 +135,6 @@ mod tests {
         a.extend(b);
         assert!(a.get(18));
         assert!(a.get(31));
-
     }
 
     #[test]

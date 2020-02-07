@@ -18,3 +18,7 @@ criterion = "0.3"
 [[bench]]
 name = "bloom"
 harness = false
+
+[[bench]]
+name = "dynamic"
+harness = false

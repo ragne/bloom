@@ -68,7 +68,7 @@ impl DynamicBloom {
     }
 
     pub fn assert_fp(&self) -> bool {
-        for (i, filter) in self.filters.iter().enumerate() {
+        for filter in self.filters.iter() {
             if filter.fp() > self.fp {
                 return false;
             }

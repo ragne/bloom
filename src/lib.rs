@@ -4,6 +4,8 @@ use std::f64::consts::E;
 use std::hash::Hash;
 
 pub mod dynamic;
+pub mod age;
+pub(crate) mod queue;
 
 // the highest prime that fits into u64
 const HASH_PRIME: u64 = 0xffffffffffffffc5;
@@ -21,6 +23,8 @@ pub struct BloomFilter {
     stored_items: u64,
     // False probability rate
     fp: f64,
+    // see for hash function
+    seed: u32
 }
 ///
 ///  Terms/Parameters:
@@ -32,10 +36,10 @@ impl BloomFilter {
     /// Creates new bloomfilter from given size and k
     pub fn new(size: usize, k: usize, fp: f64) -> Self {
         // @TODO: what should be in default constructor?
-        BloomFilter::with_parameters(size, k, fp)
+        BloomFilter::with_parameters(size, k, fp, 0)
     }
 
-    pub fn with_parameters(size: usize, k: usize, fp: f64) -> Self {
+    pub fn with_parameters(size: usize, k: usize, fp: f64, seed: u32) -> Self {
         let capacity = BloomFilter::calculate_capacity_from_fp_size(fp, size);
         let nbits = size * 8;
         assert!(
@@ -49,6 +53,7 @@ impl BloomFilter {
             capacity,
             fp,
             stored_items: 0,
+            seed
         }
     }
 
@@ -78,8 +83,14 @@ impl BloomFilter {
         self.capacity
     }
 
+    /// Returns length of bits in filter
     pub fn bits(&self) -> usize {
         self.array.len()
+    }
+
+    /// Clears the filter, set all bits to zero
+    pub fn clear(&mut self) {
+        self.array.clear()
     }
 
     /// Calculates size in _bytes_ from given false probability and expected capacity
@@ -123,22 +134,22 @@ impl BloomFilter {
     }
 
     #[inline]
-    fn _mmr3_hash<T: Hash>(t: &T) -> u128 {
-        let mut s = Murmur3HasherExt::with_seed(0);
+    fn _mmr3_hash<T: Hash>(&self, t: &T) -> u128 {
+        let mut s = Murmur3HasherExt::with_seed(self.seed);
         t.hash(&mut s);
         s.finish_ext()
     }
 
     #[inline]
-    fn _spooky_hash<T: Hash>(t: &T) -> u128 {
-        let mut s = SpookyHasherExt::with_seed((0, 0));
+    fn _spooky_hash<T: Hash>(&self, t: &T) -> u128 {
+        let mut s = SpookyHasherExt::with_seed((self.seed as u64, self.seed as u64));
         t.hash(&mut s);
         s.finish_ext()
     }
 
     #[inline]
-    fn _xxh3_hash<T: Hash>(t: &T) -> u128 {
-        let mut s = XXH3HasherExt::with_seed(0);
+    fn _xxh3_hash<T: Hash>(&self, t: &T) -> u128 {
+        let mut s = XXH3HasherExt::with_seed(self.seed as u64);
         t.hash(&mut s);
         s.finish_ext()
     }
@@ -151,11 +162,11 @@ impl BloomFilter {
     pub fn compute_hashes<I: Hash>(&self, item: &I) -> Vec<u64> {
         let mut result: Vec<u64> = Vec::with_capacity(self.k);
 
-        let h1 = BloomFilter::_mmr3_hash(item);
+        let h1 = self._mmr3_hash(item);
         result.push(h1 as u64);
         result.push((h1 >> 64) as u64);
 
-        let h2 = BloomFilter::_xxh3_hash(item);
+        let h2 = self._xxh3_hash(item);
         result.push(h2 as u64);
         result.push((h2 >> 64) as u64);
 
